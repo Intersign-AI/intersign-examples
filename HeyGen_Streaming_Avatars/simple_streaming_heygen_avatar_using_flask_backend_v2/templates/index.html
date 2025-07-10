@@ -1,0 +1,233 @@
+<!-- templates/index.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>HeyGen Streaming API (V1 - WebRTC)</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .controls {
+            margin-bottom: 20px;
+        }
+        .status {
+            height: 200px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-top: 20px;
+            font-family: monospace;
+        }
+        video {
+            width: 100%;
+            max-height: 400px;
+            border: 1px solid #ccc;
+            margin: 20px 0;
+        }
+        .input-group {
+            margin: 20px 0;
+            display: flex;
+            gap: 10px;
+        }
+        select, input, button {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        input {
+            flex-grow: 1;
+        }
+        .avatar-select {
+            width: 100%;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>HeyGen Streaming API Demo</h1>
+        
+        <div class="controls">
+            <select id="avatarSelect" class="avatar-select">
+                {% for avatar in avatars %}
+                <option value="{{ avatar.avatar_id }}" {% if avatar.avatar_id == "Anna_public_3_20240108" %}selected{% endif %}>
+                    {{ avatar.name }}
+                </option>
+                {% endfor %}
+            </select>
+            <div class="input-group">
+                <button id="startBtn">Start Session</button>
+                <button id="closeBtn">Close Session</button>
+            </div>
+        </div>
+
+        <div class="input-group">
+            <input id="taskInput" type="text" placeholder="Enter text for avatar to speak" />
+            <button id="talkBtn">Talk</button>
+        </div>
+
+        <video id="mediaElement" autoplay></video>
+        <pre id="status" class="status"></pre>
+    </div>
+
+    <script>
+        let sessionInfo = null;
+        let peerConnection = null;
+
+        const statusEl = document.getElementById("status");
+        const mediaElement = document.getElementById("mediaElement");
+        const avatarSelect = document.getElementById("avatarSelect");
+
+        function updateStatus(message) {
+            const time = new Date().toLocaleTimeString();
+            statusEl.textContent += `[${time}] ${message}\n`;
+            statusEl.scrollTop = statusEl.scrollHeight;
+        }
+
+        async function createNewSession() {
+            updateStatus("Creating new session...");
+            
+            const selectedAvatarId = avatarSelect.value;
+            updateStatus(`Selected avatar: ${avatarSelect.options[avatarSelect.selectedIndex].text}`);
+
+            const response = await fetch("/api/session/new", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ avatar_id: selectedAvatarId })
+            });
+
+            const data = await response.json();
+            if (!data.data) {
+                console.error("Failed to create session:", data);
+                updateStatus(`Error: ${data.message || "Failed to create session"}`);
+                return;
+            }
+
+            sessionInfo = data.data;
+            const { sdp, ice_servers2: iceServers } = sessionInfo;
+
+            peerConnection = new RTCPeerConnection({ iceServers });
+
+            peerConnection.ontrack = (event) => {
+                if (event.track.kind === "video" || event.track.kind === "audio") {
+                    mediaElement.srcObject = event.streams[0];
+                    updateStatus("Media stream received and attached.");
+                }
+            };
+
+            await peerConnection.setRemoteDescription(
+                typeof sdp === "string" ? { type: "offer", sdp } : sdp
+            );
+
+            const localDescription = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(localDescription);
+
+            // Handle ICE candidates
+            peerConnection.onicecandidate = async ({ candidate }) => {
+                if (candidate) {
+                    try {
+                        await fetch("/api/session/ice", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                session_id: sessionInfo.session_id,
+                                candidate: candidate.toJSON()
+                            })
+                        });
+                    } catch (err) {
+                        updateStatus(`ICE candidate error: ${err.message}`);
+                    }
+                }
+            };
+
+            await fetch("/api/session/start", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    session_id: sessionInfo.session_id,
+                    sdp: localDescription
+                })
+            });
+
+            updateStatus("Session started successfully.");
+            
+            // Disable avatar selection during active session
+            avatarSelect.disabled = true;
+        }
+
+        async function sendText(text) {
+            if (!sessionInfo) {
+                updateStatus("No active session. Please start a session first.");
+                return;
+            }
+
+            try {
+                await fetch("/api/session/task", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        session_id: sessionInfo.session_id,
+                        text: text
+                    })
+                });
+                updateStatus(`Avatar will now say: "${text}"`);
+            } catch (err) {
+                updateStatus(`Error sending text: ${err.message}`);
+            }
+        }
+
+        async function closeSession() {
+            if (!sessionInfo) {
+                updateStatus("No active session to close.");
+                return;
+            }
+
+            try {
+                await fetch("/api/session/stop", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ session_id: sessionInfo.session_id })
+                });
+
+                if (peerConnection) {
+                    peerConnection.close();
+                    peerConnection = null;
+                }
+
+                sessionInfo = null;
+                mediaElement.srcObject = null;
+                avatarSelect.disabled = false;  // Re-enable avatar selection
+                updateStatus("Session closed successfully.");
+            } catch (err) {
+                updateStatus(`Error closing session: ${err.message}`);
+            }
+        }
+
+        // Event Listeners
+        document.getElementById("startBtn").addEventListener("click", createNewSession);
+        document.getElementById("closeBtn").addEventListener("click", closeSession);
+        document.getElementById("talkBtn").addEventListener("click", () => {
+            const text = document.getElementById("taskInput").value.trim();
+            if (text) {
+                sendText(text);
+                document.getElementById("taskInput").value = "";
+            }
+        });
+
+        // Add enter key support for the text input
+        document.getElementById("taskInput").addEventListener("keypress", (event) => {
+            if (event.key === "Enter") {
+                const text = event.target.value.trim();
+                if (text) {
+                    sendText(text);
+                    event.target.value = "";
+                }
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>HeyGen Streaming API (V1 - WebRTC)</title>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  </head>
+  <body>
+    <h1>HeyGen Streaming API (V1) - Flask Demo</h1>
+    
+    <!-- Start/Stop buttons -->
+    <button id="startBtn">Start Session</button>
+    <button id="closeBtn">Close Session</button>
+
+    <!-- Input for text-to-speak -->
+    <input id="taskInput" type="text" placeholder="Enter text for avatar to speak" />
+    <button id="talkBtn">Talk</button>
+
+    <!-- Video element for avatar -->
+    <video id="mediaElement" autoplay></video>
+
+    <!-- Status logs -->
+    <pre id="status"></pre>
+
+    <script>
+      /********************************************************************
+       * Configuration
+       ********************************************************************/
+      const API_CONFIG = {
+        apiKey: "HEYGEN_API_KEY" // Replace with your HeyGen API Key
+        serverUrl: "https://api.heygen.com",
+      };
+
+      let sessionInfo = null;
+      let peerConnection = null;
+
+      const statusEl = document.getElementById("status");
+      const mediaElement = document.getElementById("mediaElement");
+
+      /********************************************************************
+       * Helper Functions
+       ********************************************************************/
+      function updateStatus(message) {
+        const time = new Date().toLocaleTimeString();
+        statusEl.textContent += `[${time}] ${message}\n`;
+        statusEl.scrollTop = statusEl.scrollHeight;
+      }
+
+      /********************************************************************
+       * Create New Session
+       ********************************************************************/
+      async function createNewSession() {
+        updateStatus("Creating new session...");
+
+        const response = await fetch(`${API_CONFIG.serverUrl}/v1/streaming.new`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Api-Key": API_CONFIG.apiKey,
+          },
+          body: JSON.stringify({
+            quality: "high",
+            avatar_name: "Anna_public_3_20240108", // Default agent ID
+            voice: { voice_id: "" }, // Optional voice customization
+          }),
+        });
+
+        const data = await response.json();
+        if (!data.data) {
+          console.error("Failed to create a new session:", data);
+          updateStatus(`Error: ${data.message || "Failed to create session"}`);
+          return;
+        }
+
+        sessionInfo = data.data;
+
+        const { sdp, ice_servers2: iceServers } = sessionInfo;
+
+        // Step 1: Set up WebRTC connection
+        peerConnection = new RTCPeerConnection({ iceServers });
+
+        // Handle incoming media streams
+        peerConnection.ontrack = (event) => {
+          if (event.track.kind === "video" || event.track.kind === "audio") {
+            mediaElement.srcObject = event.streams[0];
+            updateStatus("Media stream received and attached.");
+          }
+        };
+
+        // Step 2: Set remote description
+        if (typeof sdp === "string") {
+          await peerConnection.setRemoteDescription({ type: "offer", sdp });
+        } else if (typeof sdp === "object" && sdp.type && sdp.sdp) {
+          await peerConnection.setRemoteDescription(sdp);
+        } else {
+          throw new Error("Invalid SDP format received from server.");
+        }
+        updateStatus("Remote description set successfully.");
+
+        // Step 3: Create and send local description
+        const localDescription = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(localDescription);
+
+        await fetch(`${API_CONFIG.serverUrl}/v1/streaming.start`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Api-Key": API_CONFIG.apiKey,
+          },
+          body: JSON.stringify({
+            session_id: sessionInfo.session_id,
+            sdp: localDescription,
+          }),
+        });
+
+        updateStatus("Streaming session started successfully.");
+      }
+
+      /********************************************************************
+       * Handle ICE Candidates
+       ********************************************************************/
+      async function handleICE(session_id, candidate) {
+        try {
+          await fetch(`${API_CONFIG.serverUrl}/v1/streaming.ice`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Api-Key": API_CONFIG.apiKey,
+            },
+            body: JSON.stringify({
+              session_id,
+              candidate,
+            }),
+          });
+        } catch (err) {
+          updateStatus(`Error sending ICE candidate: ${err.message}`);
+        }
+      }
+
+      /********************************************************************
+       * Send Text to Avatar
+       ********************************************************************/
+      async function sendText(text) {
+        if (!sessionInfo) {
+          updateStatus("No active session. Please start a session first.");
+          return;
+        }
+
+        try {
+          await fetch(`${API_CONFIG.serverUrl}/v1/streaming.task`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Api-Key": API_CONFIG.apiKey,
+            },
+            body: JSON.stringify({
+              session_id: sessionInfo.session_id,
+              text: text,
+            }),
+          });
+          updateStatus(`Avatar will now say: "${text}"`);
+        } catch (err) {
+          updateStatus(`Error sending text: ${err.message}`);
+        }
+      }
+
+      /********************************************************************
+       * Close Session
+       ********************************************************************/
+      async function closeSession() {
+        if (!sessionInfo) {
+          updateStatus("No active session to close.");
+          return;
+        }
+
+        try {
+          await fetch(`${API_CONFIG.serverUrl}/v1/streaming.stop`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Api-Key": API_CONFIG.apiKey,
+            },
+            body: JSON.stringify({ session_id: sessionInfo.session_id }),
+          });
+
+          if (peerConnection) {
+            peerConnection.close();
+            peerConnection = null;
+          }
+
+          sessionInfo = null;
+          mediaElement.srcObject = null;
+          updateStatus("Session closed successfully.");
+        } catch (err) {
+          updateStatus(`Error closing session: ${err.message}`);
+        }
+      }
+
+      /********************************************************************
+       * Event Listeners
+       ********************************************************************/
+      document.getElementById("startBtn").addEventListener("click", async () => {
+        try {
+          await createNewSession();
+        } catch (err) {
+          updateStatus(`Error starting session: ${err.message}`);
+        }
+      });
+
+      document.getElementById("closeBtn").addEventListener("click", closeSession);
+
+      document.getElementById("talkBtn").addEventListener("click", () => {
+        const text = document.getElementById("taskInput").value.trim();
+        if (text) {
+          sendText(text);
+          document.getElementById("taskInput").value = "";
+        }
+      });
+    </script>
+  </body>
+</html>
