@@ -18,7 +18,7 @@ This dataset is designed to evaluate how different mouth morphemes and facial ex
 - Gestures should specifically capture variations based on facial expressions and mouth morphemes
 - Please refer to the **"[ASL: Mouth Morphemes Change Sign Definitions](https://www.youtube.com/watch?v=KiF86lzBtoc)"** video for reference
 - The following set of examples provides a good starting point for dataset creation:
-    - **Set 1** - sick, hilarious, disappointed, funny, stop that, LOL
+    - **Set 1** - sick, hilarious, disappointed, funny/stop that, LOL
     - **Set 2** - finish, hands off, mind boggling, that's all
     - **Set 3** - awful, impossible, believe it or not
     - **Set 4** - wrong, accidentally, unexpectedly, what matters
